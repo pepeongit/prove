@@ -17,10 +17,10 @@ RUN apt-get update && apt-get upgrade -y && \
     unzip libleveldb-dev libclang-dev ninja-build nvidia-utils-535 && \
     rm -rf /var/lib/apt/lists/*
 
-# Download and install Minio Server and Client
-RUN wget https://dl.min.io/server/minio/release/linux-amd64/minio -O /usr/local/bin/minio && \
+# Download and install Minio Server and Client (CORRECTED URLS)
+RUN wget https://dl.minio.io/server/minio/release/linux-amd64/minio -O /usr/local/bin/minio && \
     chmod +x /usr/local/bin/minio
-RUN wget https://dl.minio/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc && \
+RUN wget https://dl.minio.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc && \
     chmod +x /usr/local/bin/mc
 
 # STEP 2: Install slow language toolchains (cached layer).
@@ -30,7 +30,6 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
     rzup install rust && \
     cargo install cargo-risczero && \
     cargo install just && \
-    # CORRECTED: Removed '--package' flag. List crate names directly.
     cargo install --locked --git https://github.com/risc0/risc0 --branch release-2.1 bento-cli bento-agent bento-rest-api && \
     cargo install --locked boundless-cli
 
