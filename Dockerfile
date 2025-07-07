@@ -9,7 +9,6 @@ ENV TZ=Etc/UTC
 ENV PATH="/root/.risc0/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # STEP 1: Install base OS and system dependencies.
-# Added 'sudo' for postgres and 'psmisc' for pkill.
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
     sudo ca-certificates redis-server postgresql wget psmisc \
@@ -21,7 +20,7 @@ RUN apt-get update && apt-get upgrade -y && \
 # Download and install Minio Server and Client
 RUN wget https://dl.min.io/server/minio/release/linux-amd64/minio -O /usr/local/bin/minio && \
     chmod +x /usr/local/bin/minio
-RUN wget https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc && \
+RUN wget https://dl.minio/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc && \
     chmod +x /usr/local/bin/mc
 
 # STEP 2: Install slow language toolchains (cached layer).
@@ -31,10 +30,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
     rzup install rust && \
     cargo install cargo-risczero && \
     cargo install just && \
-    # CORRECTED: Install all three necessary packages from the git repository.
-    cargo install --locked --git https://github.com/risc0/risc0 --branch release-2.1 --package bento-cli && \
-    cargo install --locked --git https://github.com/risc0/risc0 --branch release-2.1 --package bento-agent && \
-    cargo install --locked --git https://github.com/risc0/risc0 --branch release-2.1 --package bento-rest-api && \
+    # CORRECTED: Removed '--package' flag. List crate names directly.
+    cargo install --locked --git https://github.com/risc0/risc0 --branch release-2.1 bento-cli bento-agent bento-rest-api && \
     cargo install --locked boundless-cli
 
 # --- CACHE BOUNDARY ---
