@@ -17,20 +17,23 @@ RUN apt-get update && apt-get upgrade -y && \
     unzip libleveldb-dev libclang-dev ninja-build nvidia-utils-535 && \
     rm -rf /var/lib/apt/lists/*
 
-# Download and install Minio Server and Client (CORRECTED URLS)
+# Download and install Minio Server and Client
 RUN wget https://dl.minio.io/server/minio/release/linux-amd64/minio -O /usr/local/bin/minio && \
     chmod +x /usr/local/bin/minio
 RUN wget https://dl.minio.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc && \
     chmod +x /usr/local/bin/mc
 
 # STEP 2: Install slow language toolchains (cached layer).
+# CORRECTED: Split the cargo install for risc0 components into individual commands.
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
     rustup update && \
     curl -L https://risczero.com/install | bash && \
     rzup install rust && \
     cargo install cargo-risczero && \
     cargo install just && \
-    cargo install --locked --git https://github.com/risc0/risc0 --branch release-2.1 bento-cli bento-agent bento-rest-api && \
+    cargo install --locked --git https://github.com/risc0/risc0 --branch release-2.1 bento-cli && \
+    cargo install --locked --git https://github.com/risc0/risc0 --branch release-2.1 bento-agent && \
+    cargo install --locked --git https://github.com/risc0/risc0 --branch release-2.1 bento-rest-api && \
     cargo install --locked boundless-cli
 
 # --- CACHE BOUNDARY ---
@@ -42,7 +45,7 @@ RUN git checkout release-0.11
 
 # STEP 4: Copy the main orchestration script.
 COPY startup.sh /startup.sh
-RUN chmod +x /startup.sh
+RUN chmod +x /startup.9h
 
 # Set the entrypoint for the container.
 ENTRYPOINT ["/startup.sh"]
