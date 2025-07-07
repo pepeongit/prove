@@ -1,89 +1,202 @@
 #!/bin/bash
 set -e
 
-# --- Configuration ---
-# (This section is unchanged and correct)
-export RUST_LOG="info,broker=debug,boundless_market=debug"
+# ==============================================================================
+# ==                  BOUNDLESS PROVER LAUNCH SCRIPT                          ==
+# ==============================================================================
+# This script configures and launches the full Boundless proving stack within
+# a single container, designed for environments like Clore.ai where Docker-in-Docker
+# is not available.
+
+# --- [1/6] SCRIPT CONFIGURATION ---
+echo "==== [1/6] Reading Environment Configuration ===="
+
+# Read execution mode from environment variable.
+# - 'config_only': (Default) Set up the environment and wait for inspection.
+# - 'bento_test': Configure and run a test proof with Bento.
+# - 'broker': Configure, deposit stake (if PRIVATE_KEY is set), and run the full broker.
+export BOUNDLESS_MODE="${BOUNDLESS_MODE:-config_only}"
+
+# Read secrets and configuration from environment variables.
+export PRIVATE_KEY="${PRIVATE_KEY}"
+export RPC_URL="${RPC_URL:-https://mainnet.base.org}"
+export STAKE_AMOUNT="${STAKE_AMOUNT:-10}" # Default stake amount in USDC
+
+# Set high-level logging. Use 'trace' for maximum verbosity.
+export RUST_LOG="${RUST_LOG:-info,bento=debug,risc0_bento=debug}"
 export RUST_BACKTRACE=1
-export BOUNDLESS_MARKET_ADDRESS="0x26759dbB201aFbA361Bec78E097Aa3942B0b4AB8"
-export SET_VERIFIER_ADDRESS="0x8C5a8b5cC272Fe2b74D18843CF9C3aCBc952a760"
-export ORDER_STREAM_URL="https://base-mainnet.beboundless.xyz"
-export POSTGRES_HOST="localhost"
-export POSTGRES_DB="taskdb"
-export POSTGRES_PORT="5432"
-export POSTGRES_USER="worker"
-export POSTGRES_PASS="password"
-export DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASS}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
-export REDIS_URL="redis://localhost:6379"
-export MINIO_HOST="localhost"
-export S3_URL="http://${MINIO_HOST}:9000"
-export S3_BUCKET="workflow"
-export MINIO_ROOT_USER="admin"
-export MINIO_ROOT_PASS="password"
-export S3_ACCESS_KEY=${MINIO_ROOT_USER}
-export S3_SECRET_KEY=${MINIO_ROOT_PASS}
 
-echo "================================================="
-echo "====   BOUNDLESS PROVER ORCHESTRATION SCRIPT   ===="
-echo "================================================="
+# Hardcoded addresses and URLs for Base Mainnet
+MARKET_CONTRACT="0x26759dbB201aFbA361Bec78E097Aa3942B0b4AB8"
+STAKE_TOKEN_CONTRACT="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" # USDC on Base
+ORDER_STREAM_URL="https://base-mainnet.beboundless.xyz"
 
-# Part 1: System Checkup & Dynamic Resource Allocation
-# (This section is unchanged and correct)
-echo -e "\n==== [1/6] System Checkup & Resource Allocation ===="
-nvidia-smi; GPU_COUNT=$(nvidia-smi -L | wc -l); VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n 1); TOTAL_CPU_THREADS=$(nproc); TOTAL_MEM_GB=$(free -g | awk '/^Mem:/{print $2}'); echo "INFO: Detected: $GPU_COUNT GPUs, $VRAM_MB VRAM, $TOTAL_CPU_THREADS CPU Threads, $TOTAL_MEM_GB GB RAM."; if [ "$VRAM_MB" -gt 38000 ]; then SEGMENT_SIZE=22; elif [ "$VRAM_MB" -gt 18000 ]; then SEGMENT_SIZE=21; elif [ "$VRAM_MB" -gt 14000 ]; then SEGMENT_SIZE=20; else SEGMENT_SIZE=19; fi; echo "INFO: Determined SEGMENT_SIZE: $SEGMENT_SIZE"; RESERVED_CPU=2 && RESERVED_MEM_GB=4; AVAILABLE_CPU=$((TOTAL_CPU_THREADS > RESERVED_CPU ? TOTAL_CPU_THREADS - RESERVED_CPU : 1)); AVAILABLE_MEM_GB=$((TOTAL_MEM_GB > RESERVED_MEM_GB ? TOTAL_MEM_GB - RESERVED_MEM_GB : 1)); CPU_PER_GPU=$((AVAILABLE_CPU / GPU_COUNT)); [ "$CPU_PER_GPU" -lt 1 ] && CPU_PER_GPU=1; MEM_PER_GPU=$((AVAILABLE_MEM_GB / GPU_COUNT)); [ "$MEM_PER_GPU" -lt 1 ] && MEM_PER_GPU=1; echo "INFO: Calculated per-agent resources -> CPUs: $CPU_PER_GPU, Memory: ${MEM_PER_GPU}G"
+# Define data and log directories
+DATA_DIR="/data"
+LOG_DIR="/var/log/boundless"
+mkdir -p "$DATA_DIR" "$LOG_DIR"
+touch "$LOG_DIR/boundless.log"
 
-# Part 2: Start Background Dependencies
-# (This section is unchanged and correct)
-echo -e "\n==== [2/6] Starting Background Dependencies (Redis, Postgres, Minio) ===="
-redis-server --daemonize yes; pg_ctlcluster 14 main start; sudo -u postgres psql -c "CREATE DATABASE ${POSTGRES_DB}" 2>/dev/null || true; sudo -u postgres psql -c "CREATE USER ${POSTGRES_USER} WITH PASSWORD '${POSTGRES_PASS}'" 2>/dev/null || true; sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${POSTGRES_DB} TO ${POSTGRES_USER}"; mkdir -p /minio-data; MINIO_ROOT_USER=${MINIO_ROOT_USER} MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASS} minio server /minio-data --console-address ":9001" &; echo "INFO: Waiting for services to initialize..." && sleep 15; mc alias set local ${S3_URL} ${S3_ACCESS_KEY} ${S3_SECRET_KEY}; mc mb local/${S3_BUCKET} > /dev/null 2>&1 || true; echo "INFO: Dependencies are running."
 
-# Part 3: Run Bento Test Proof
-echo -e "\n==== [3/6] Running Bento Test Proof (No Broker) ===="
-echo "INFO: Verifying and starting Bento services for testing..."
+# --- [2/6] SYSTEM CHECKUP ---
+echo ""
+echo "==== [2/6] Performing System Checkup ===="
 
-# ADDED: Verification step for clearer error messages.
-command -v bento_rest_api >/dev/null 2>&1 || { echo "❌ ERROR: bento_rest_api not found. Installation failed."; exit 1; }
-command -v bento_agent >/dev/null 2>&1 || { echo "❌ ERROR: bento_agent not found. Installation failed."; exit 1; }
-
-bento_rest_api --bind-addr 0.0.0.0:8081 &
-bento_agent -t exec --segment-po2 ${SEGMENT_SIZE} &
-bento_agent -t exec --segment-po2 ${SEGMENT_SIZE} &
-bento_agent -t aux --monitor-requeue &
-bento_agent -t snark &
-for (( i=0; i<GPU_COUNT; i++ )); do bento_agent -t prove --gpu-id $i & done
-echo "INFO: Waiting for Bento infrastructure to start..." && sleep 5
-
-echo "INFO: Submitting test proof to Bento..."
-if bento_cli -c 32 | tee /tmp/bento_test.log | grep -q "Job Done!"; then
-    echo "✅ SUCCESS: Bento test proof completed successfully!"
-else
-    echo "❌ ERROR: Bento test proof failed. See logs below."
-    cat /tmp/bento_test.log
+if ! command -v nvidia-smi &> /dev/null; then
+    echo "ERROR: nvidia-smi command not found. Please ensure NVIDIA drivers are accessible."
     exit 1
 fi
-echo "INFO: Shutting down test agents..." && pkill -f bento_ || true && sleep 5
+nvidia-smi
 
-# Part 4: Auto-Staking Logic
-# (This section is unchanged and correct)
-echo -e "\n==== [4/6] Checking Stake and Depositing if Needed ===="
-if [ -z "$PRIVATE_KEY" ] || [ -z "$RPC_URL" ]; then echo "INFO: PRIVATE_KEY or RPC_URL not set. Skipping stake check."; else STAKED_BALANCE=$(boundless account stake-balance | awk '{print $1}'); echo "INFO: Current staked balance: $STAKED_BALANCE"; if (( $(echo "$STAKED_BALANCE < 1.0" | bc -l) )); then STAKE_AMOUNT=${STAKE_IF_EMPTY:-100}; echo "INFO: Staked balance is less than 1.0. Attempting to deposit $STAKE_AMOUNT USDC..."; if boundless account deposit-stake "$STAKE_AMOUNT"; then echo "✅ Stake deposit successful."; else echo "⚠️ Stake deposit failed. Continuing..."; fi; else echo "INFO: Sufficient stake already exists. Skipping deposit."; fi; fi
+GPU_COUNT=$(nvidia-smi -L | wc -l)
+VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n 1)
+CPU_THREADS=$(nproc)
+TOTAL_MEM_GB=$(free -g | awk '/^Mem:/{print $2}')
 
-# Part 5: Generate compose.yml (Logging Only)
-# (This section is unchanged and correct)
-echo -e "\n==== [5/6] Generating compose.yml for logging purposes ===="
-echo "INFO: compose.yml generation is for visual confirmation only."; sleep 2
+echo "INFO: Detected System Resources:"
+echo "  - GPU Count: $GPU_COUNT"
+echo "  - VRAM per GPU (MB): $VRAM_MB"
+echo "  - Total CPU Threads: $CPU_THREADS"
+echo "  - Total System Memory (GB): $TOTAL_MEM_GB"
 
-# Part 6: Run Full Prover Stack
-echo -e "\n==== [6/6] Starting Full Prover Stack (Bento Agents + Broker) ===="
-echo "INFO: Starting all Bento services for production..."
-bento_rest_api --bind-addr 0.0.0.0:8081 &
-bento_agent -t exec --segment-po2 ${SEGMENT_SIZE} &
-bento_agent -t exec --segment-po2 ${SEGMENT_SIZE} &
-bento_agent -t aux --monitor-requeue &
-bento_agent -t snark &
-for (( i=0; i<GPU_COUNT; i++ )); do bento_agent -t prove --gpu-id $i & done
-echo "INFO: Waiting for Bento infrastructure to start..." && sleep 5
 
-echo "INFO: All agents running. Starting the main Broker process in the foreground."
-echo "----------------------------------------------------------------------"
-boundless broker --db-url 'sqlite:///db/broker.db' --config-file /boundless/broker.toml --bento-api-url http://localhost:8081
+# --- [3/6] DYNAMIC RESOURCE ALLOCATION ---
+echo ""
+echo "==== [3/6] Calculating Dynamic Resource Allocation ===="
+
+# Determine SEGMENT_SIZE based on GPU VRAM
+if [ "$VRAM_MB" -gt 38000 ]; then SEGMENT_SIZE=22
+elif [ "$VRAM_MB" -gt 18000 ]; then SEGMENT_SIZE=21
+elif [ "$VRAM_MB" -gt 14000 ]; then SEGMENT_SIZE=20
+else SEGMENT_SIZE=19
+fi
+echo "INFO: Determined SEGMENT_SIZE: $SEGMENT_SIZE"
+
+# Reserve resources for OS and core services (in threads and GB)
+RESERVED_CPU=4
+RESERVED_MEM=8
+echo "INFO: Reserving ${RESERVED_CPU} CPU threads and ${RESERVED_MEM}GB RAM for OS and core services."
+
+# Calculate available resources for prover/executor agents
+AVAIL_CPU=$((CPU_THREADS - RESERVED_CPU))
+AVAIL_MEM=$((TOTAL_MEM_GB - RESERVED_MEM))
+NUM_EXEC_AGENTS=2 # As per original compose file
+# Total number of agents that will share the available resources
+AGENT_COUNT=$((GPU_COUNT + NUM_EXEC_AGENTS))
+
+# Calculate resources per agent, ensuring we don't allocate zero
+CPU_PER_AGENT=$((AVAIL_CPU / AGENT_COUNT > 0 ? AVAIL_CPU / AGENT_COUNT : 1))
+MEM_PER_AGENT_G=$((AVAIL_MEM / AGENT_COUNT > 0 ? AVAIL_MEM / AGENT_COUNT : 1))
+MEM_PER_AGENT_M=$((MEM_PER_AGENT_G * 1024))
+
+echo "INFO: Distributing available resources to $AGENT_COUNT agents:"
+echo "  - CPUs per Agent: $CPU_PER_AGENT"
+echo "  - Memory per Agent: ${MEM_PER_AGENT_G}G"
+
+
+# --- [4/6] GENERATE CONFIGURATION FILES ---
+echo ""
+echo "==== [4/6] Generating Configuration Files ===="
+
+# Generate broker.toml for the broker process
+cat << EOF > /boundless/broker.toml
+[market]
+rpc_url = "${RPC_URL}"
+chain_id = 8453 # Base Mainnet
+market_contract = "${MARKET_CONTRACT}"
+private_key = "${PRIVATE_KEY}"
+
+[prover]
+bento_api_url = "http://127.0.0.1:8081"
+
+[orders]
+order_stream_url = "${ORDER_STREAM_URL}"
+EOF
+echo "INFO: Generated broker.toml"
+
+# --- [5/6] SERVICE LAUNCHER ---
+echo ""
+echo "==== [5/6] Starting Services for Mode: $BOUNDLESS_MODE ===="
+
+# Function to start all Bento services in the background
+start_bento_services() {
+    echo "INFO: Starting Bento services..."
+
+    # Start REST API
+    /boundless/target/release/rest_api --bind-addr 0.0.0.0:8081 >> "$LOG_DIR/rest_api.log" 2>&1 &
+    echo "  - Started REST API"
+
+    # Start AUX Agent
+    /boundless/target/release/agent -t aux --monitor-requeue >> "$LOG_DIR/aux_agent.log" 2>&1 &
+    echo "  - Started AUX Agent"
+
+    # Start SNARK Agent
+    /boundless/target/release/agent -t snark >> "$LOG_DIR/snark_agent.log" 2>&1 &
+    echo "  - Started SNARK Agent"
+    
+    # Start EXEC Agents
+    for i in $(seq 0 $((NUM_EXEC_AGENTS - 1))); do
+        /boundless/target/release/agent -t exec --segment-po2 ${SEGMENT_SIZE} >> "$LOG_DIR/exec_agent${i}.log" 2>&1 &
+        echo "  - Started EXEC Agent ${i}"
+    done
+    
+    # Start GPU PROVE Agents, one per GPU
+    for i in $(seq 0 $((GPU_COUNT - 1))); do
+        export NVIDIA_VISIBLE_DEVICES=${i}
+        /boundless/target/release/agent -t prove >> "$LOG_DIR/gpu_prove_agent${i}.log" 2>&1 &
+        echo "  - Started GPU PROVE Agent ${i} for GPU ${i}"
+    done
+    
+    unset NVIDIA_VISIBLE_DEVICES
+    echo "INFO: All Bento services launched. Waiting for them to initialize..."
+    sleep 20 # Give services time to start up
+}
+
+# --- [6/6] EXECUTION LOGIC ---
+echo ""
+echo "==== [6/6] Executing Main Logic ===="
+
+cd /boundless
+
+case "$BOUNDLESS_MODE" in
+  bento_test)
+    echo "INFO: Entering 'bento_test' mode."
+    start_bento_services
+    
+    echo "INFO: Running bento_cli test proof..."
+    bento_cli -c 32
+    echo "INFO: Test proof command finished. Check logs for 'Job Done!'."
+    
+    echo "INFO: Tailing logs. Press Ctrl+C to exit."
+    tail -n 100 -f "$LOG_DIR"/*.log
+    ;;
+
+  broker)
+    echo "INFO: Entering 'broker' mode."
+    start_bento_services
+    
+    if [[ -n "$PRIVATE_KEY" ]]; then
+        echo "INFO: PRIVATE_KEY is set. Attempting to deposit stake..."
+        boundless account deposit-stake "$STAKE_AMOUNT" --rpc-url "$RPC_URL" --stake-token "$STAKE_TOKEN_CONTRACT" || echo "WARN: Staking failed. Check your configuration and balance. Continuing..."
+        echo "INFO: Current stake balance:"
+        boundless account stake-balance --rpc-url "$RPC_URL" --market-contract "$MARKET_CONTRACT"
+    else
+        echo "WARN: PRIVATE_KEY not set. Skipping stake deposit. Broker will run without being able to accept jobs."
+    fi
+    
+    echo "INFO: Starting the main broker process..."
+    /boundless/target/release/broker --config-file /boundless/broker.toml >> "$LOG_DIR/broker.log" 2>&1 &
+    
+    echo "INFO: Full stack is running. Tailing logs. Press Ctrl+C to exit."
+    tail -n 100 -f "$LOG_DIR"/*.log
+    ;;
+
+  *)
+    echo "INFO: Mode is 'config_only'. Configuration is complete."
+    echo "INFO: The system is ready for inspection. The container will remain running."
+    echo "INFO: Set BOUNDLESS_MODE to 'bento_test' or 'broker' to run the prover."
+    tail -f /dev/null
+    ;;
+esac
+
+exit 0
