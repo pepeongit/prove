@@ -1,0 +1,34 @@
+name: Docker Build and Push
+
+on:
+  push:
+    branches:
+      - main # Trigger on pushes to the main branch
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+
+jobs:
+  build_and_push:
+    runs-on: ubuntu-latest # GitHub's powerful Ubuntu runner
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: actualyakgangster/prove:1.0
+        platforms: linux/amd64 # Ensure it builds for the correct architecture
+        cache-from: type=gha,scope=boundless-prover-clore # Use GitHub Actions cache for layers
+        cache-to: type=gha,scope=boundless-prover-clore,mode=max # Store layers back in GHA cache
